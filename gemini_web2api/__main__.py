@@ -21,6 +21,9 @@ def main():
     config_path = args.config or os.environ.get("GEMINI_WEB2API_CONFIG") or find_config()
     if config_path:
         load_config(config_path)
+        
+    from .config import load_env_config
+    load_env_config()
 
     if args.port:
         CONFIG["port"] = args.port

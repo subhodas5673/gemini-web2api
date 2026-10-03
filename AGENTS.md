@@ -1,0 +1,66 @@
+# AGENTS.md
+
+This file is a practical guide for AI coding agents (and humans acting as agents) working on the `gemini-web2api` repository. Read this before attempting any modifications.
+
+## Project Identity
+This is a reverse-engineering proxy. It converts Google Gemini's web interface protocol (`StreamGenerate`) into a standard OpenAI-compatible API Server. It does this by masquerading as the Gemini Web client, extracting JSON from the client requests, building undocumented protobuf-like nested JSON array payloads, and parsing chunked responses.
+
+## Architecture Summary
+- **Python Implementation**: Uses Python's built-in `http.server` (threaded) and `urllib` (or `httpx` for streaming) to handle routing and upstream requests. Designed to be completely zero-dependency if necessary.
+- **JavaScript Implementation**: `cloudflare/worker.js` is a completely independent Edge implementation for Cloudflare Workers, handling its own fingerprinting and state management.
+
+## Important Directories
+- `/` - Root contains the monolithic script (`gemini_web2api.py`), Docker configs, and docs.
+- `gemini_web2api/` - The core Python package implementation. 
+- `cloudflare/` - Contains the serverless Edge implementation.
+- `docs/` - Comprehensive architecture and usage documentation.
+- `tests/` - Integration tests against the live Google APIs.
+
+## Important Files
+- `gemini_web2api.py`: The single-file implementation. **If you modify the core logic in `gemini_web2api/`, you must sync the changes to this file.**
+- `gemini_web2api/server.py`: The OpenAI HTTP handler. Modifying this risks breaking client integrations (like Cherry Studio or ChatBox).
+- `gemini_web2api/gemini.py`: The core Google protocol payload builder and response parser.
+- `gemini_web2api/tools.py`: OpenAI-to-Gemini tool/function translation logic.
+- `cloudflare/worker.js`: Cloudflare worker script.
+
+## Development Commands
+- **Install dependencies**: `pip install -r requirements.txt` (only `httpx`).
+- **Run local server**: `python -m gemini_web2api` or `python gemini_web2api.py`.
+- **Run tests**: `python -m unittest tests/test_modular_sync.py` (requires internet and potentially a valid configuration).
+
+## Configuration
+Controlled via `config.json` or CLI args.
+- `port`: Port to listen on (default 8081).
+- `api_keys`: Array of keys. If empty, the proxy allows unauthenticated access.
+- `gemini_bl`: Build label token. Must match Google's current frontend version.
+- `cookie_file`: Path to Google session cookies (required for pro routing).
+
+## Critical Invariants
+1. **The Gemini Payload Structure**: The request payload constructed in `gemini.py` (`inner[0] = ...`) must exactly match what the Google Gemini frontend currently sends. Any deviation in array indices causes HTTP 400.
+2. **Zero Dependencies**: The core functionality must work with pure standard library Python (no `requests`, `fastapi`, etc.). `httpx` is strictly an optional enhancement for SSE streaming.
+3. **OpenAI Compatibility**: The response JSON and SSE chunks (`data: {...}`) must strictly adhere to the OpenAI API specification.
+4. **Cloudflare Worker Isolation**: Do not use global mutable state in `worker.js` across requests. The V8 Isolates will cause cross-request data contamination (e.g., mixing up user cookies).
+
+## Modification Guidelines
+- **Before modifying the Gemini payload builder (`gemini.py`)**: Inspect live requests in a browser's Network tab (`https://gemini.google.com`) to verify the required nested array structure.
+- **When modifying `gemini_web2api/`**: Remember to propagate changes to the monolithic `gemini_web2api.py` script.
+- **Do not commit secrets**: Never hardcode API keys, `SAPISID` tokens, or cookies into test files or documentation.
+
+## High-Risk Areas
+- `gemini_web2api/gemini.py` `_build_payload()`: Highly sensitive to format changes.
+- `gemini_web2api/gemini.py` `extract_response_text()`: Relies on fragile regex and index matching of the `wrb.fr` payload.
+- `cloudflare/worker.js`: `getRequestConfig` manages state isolation. Breaking this breaks concurrency.
+
+## Testing Requirements
+- After modifying OpenAI JSON formats, test using an actual OpenAI client (e.g., standard `openai` python package) to ensure compatibility.
+- Test both streaming (`stream=True`) and non-streaming responses.
+- Test image upload logic if modifying `multimodal.py`.
+
+## Common Pitfalls
+- **Assuming standard REST**: Gemini's `StreamGenerate` is not a standard REST API. It returns chunks containing heavily escaped arrays, sometimes nested 4-5 levels deep.
+- **Docker NAT Blocking**: If you get empty responses running in Docker, it's often Google blocking the Docker NAT IP. (Use `--network host`).
+- **Forgetting Cloudflare**: Python logic changes are not magically applied to `worker.js`. 
+
+## Source of Truth
+- For OpenAI API compatibility: The official OpenAI documentation.
+- For Gemini Protocol: The actual network requests generated by `https://gemini.google.com` in a browser. **The code is the ultimate source of truth when documentation differs.**
